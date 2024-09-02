@@ -2,7 +2,7 @@ use super::TpmProvider;
 use crate::{
     common::{
         crypto::{
-            algorithms::encryption::{AsymmetricEncryption, EccSchemeAlgorithm},
+            algorithms::encryption::{AsymmetricEncryption, EccCurves, EccSchemeAlgorithm},
             KeyUsage,
         },
         error::SecurityModuleError,
@@ -11,17 +11,24 @@ use crate::{
     tpm::{core::error::TpmError, win::execute_ncrypt_function, TpmConfig},
 };
 use async_trait::async_trait;
+use std::convert::{TryFrom, TryInto};
 use std::mem::transmute;
 use tracing::instrument;
 use windows::{
     core::PCWSTR,
     Win32::Security::{
         Cryptography::{
-            NCryptCreatePersistedKey, NCryptFinalizeKey, NCryptGetProperty, NCryptOpenKey,
-            NCryptOpenStorageProvider, NCryptSetProperty, BCRYPT_ECDH_ALGORITHM,
-            BCRYPT_ECDSA_ALGORITHM, CERT_KEY_SPEC, MS_PLATFORM_CRYPTO_PROVIDER,
-            NCRYPT_ALLOW_DECRYPT_FLAG, NCRYPT_ALLOW_SIGNING_FLAG, NCRYPT_CERTIFICATE_PROPERTY,
-            NCRYPT_FLAGS, NCRYPT_KEY_HANDLE, NCRYPT_KEY_USAGE_PROPERTY, NCRYPT_LENGTHS_PROPERTY,
+            BCryptGenerateKeyPair, NCryptCreatePersistedKey, NCryptFinalizeKey, NCryptGetProperty,
+            NCryptOpenKey, NCryptOpenStorageProvider, NCryptSetProperty, BCRYPT_ECC_CURVE_25519,
+            BCRYPT_ECC_CURVE_BRAINPOOLP256R1, BCRYPT_ECC_CURVE_BRAINPOOLP384R1,
+            BCRYPT_ECC_CURVE_BRAINPOOLP512R1, BCRYPT_ECC_CURVE_NAME, BCRYPT_ECC_CURVE_NISTP256,
+            BCRYPT_ECC_CURVE_NISTP384, BCRYPT_ECC_CURVE_NISTP521, BCRYPT_ECC_CURVE_SECP256K1,
+            BCRYPT_ECDH_ALGORITHM, BCRYPT_ECDH_P256_ALGORITHM, BCRYPT_ECDH_P384_ALGORITHM,
+            BCRYPT_ECDH_P521_ALGORITHM, BCRYPT_ECDSA_ALGORITHM, BCRYPT_ECDSA_P256_ALGORITHM,
+            BCRYPT_ECDSA_P384_ALGORITHM, BCRYPT_ECDSA_P521_ALGORITHM, CERT_KEY_SPEC,
+            MS_PLATFORM_CRYPTO_PROVIDER, NCRYPT_ALLOW_DECRYPT_FLAG, NCRYPT_ALLOW_SIGNING_FLAG,
+            NCRYPT_CERTIFICATE_PROPERTY, NCRYPT_ECC_CURVE_NAME_PROPERTY, NCRYPT_FLAGS,
+            NCRYPT_KEY_HANDLE, NCRYPT_KEY_USAGE_PROPERTY, NCRYPT_LENGTHS_PROPERTY,
             NCRYPT_LENGTH_PROPERTY, NCRYPT_OVERWRITE_KEY_FLAG, NCRYPT_PROV_HANDLE,
             NCRYPT_RSA_ALGORITHM, NCRYPT_SILENT_FLAG, NCRYPT_SUPPORTED_LENGTHS,
         },
@@ -70,10 +77,19 @@ impl Provider for TpmProvider {
         let mut key_handle = NCRYPT_KEY_HANDLE::default();
         let alg_id: PCWSTR = match self.key_algo.as_ref().unwrap() {
             AsymmetricEncryption::Rsa(_) => NCRYPT_RSA_ALGORITHM,
-            AsymmetricEncryption::Rsa(_) => NCRYPT_RSA_ALGORITHM,
             AsymmetricEncryption::Ecc(ecc_scheme) => match ecc_scheme {
-                EccSchemeAlgorithm::EcDsa(_) => BCRYPT_ECDSA_ALGORITHM,
-                EccSchemeAlgorithm::EcDh(_) => BCRYPT_ECDH_ALGORITHM,
+                EccSchemeAlgorithm::EcDsa(curve) => match *curve {
+                    EccCurves::P256 => BCRYPT_ECDSA_P256_ALGORITHM,
+                    EccCurves::P384 => BCRYPT_ECDSA_P384_ALGORITHM,
+                    EccCurves::P521 => BCRYPT_ECDSA_P521_ALGORITHM,
+                    _ => unimplemented!("Anything besides the nist curves is not implemented yet."),
+                },
+                EccSchemeAlgorithm::EcDh(curve) => match *curve {
+                    EccCurves::P256 => BCRYPT_ECDH_P256_ALGORITHM,
+                    EccCurves::P384 => BCRYPT_ECDH_P384_ALGORITHM,
+                    EccCurves::P521 => BCRYPT_ECDH_P521_ALGORITHM,
+                    _ => unimplemented!("Anything besides the nist curves is not implemented yet."),
+                },
                 _ => unimplemented!(),
             },
         };
@@ -86,16 +102,6 @@ impl Provider for TpmProvider {
             alg_id,
             key_cu16,
             CERT_KEY_SPEC(0),
-            //NCRYPT_OVERWRITE_KEY_FLAG | NCRYPT_MACHINE_KEY_FLAG, // The program does not have the permissions.
-            NCRYPT_OVERWRITE_KEY_FLAG,
-        ));
-        execute_ncrypt_function!(NCryptCreatePersistedKey(
-            self.provider_handle.as_ref(),
-            &mut key_handle,
-            alg_id,
-            key_cu16,
-            CERT_KEY_SPEC(0),
-            //NCRYPT_OVERWRITE_KEY_FLAG | NCRYPT_MACHINE_KEY_FLAG, // The program does not have the permissions.
             NCRYPT_OVERWRITE_KEY_FLAG,
         ));
 
@@ -118,8 +124,6 @@ impl Provider for TpmProvider {
                 NCRYPT_SILENT_FLAG,     // Flags
             ));
         }
-
-        //TODO Set EcDsa or EcDh Properties.
 
         for usage in self.key_usages.as_ref().unwrap() {
             match usage {
@@ -203,13 +207,6 @@ impl Provider for TpmProvider {
         let mut key_handle = NCRYPT_KEY_HANDLE::default();
         let key_cu16 = PCWSTR(key_id.as_ptr() as *const u16);
 
-        execute_ncrypt_function!(NCryptOpenKey(
-            *self.provider_handle.as_ref().unwrap(),
-            &mut key_handle,
-            key_cu16,
-            CERT_KEY_SPEC(0),
-            NCRYPT_FLAGS(0),
-        ));
         execute_ncrypt_function!(NCryptOpenKey(
             *self.provider_handle.as_ref().unwrap(),
             &mut key_handle,
@@ -312,4 +309,25 @@ fn key_supports_length(
 ) -> Result<bool, SecurityModuleError> {
     let key_length_properties = ncrypt_supported_key_lengths(key_handle)?;
     Ok(key_length_properties.dwMinLength <= length && length <= key_length_properties.dwMaxLength)
+}
+
+impl TryFrom<EccCurves> for PCWSTR {
+    type Error = SecurityModuleError;
+
+    fn try_from(curve: EccCurves) -> Result<Self, Self::Error> {
+        match curve {
+            EccCurves::Curve25519 => Ok(BCRYPT_ECC_CURVE_25519),
+            EccCurves::P256 => Ok(BCRYPT_ECC_CURVE_NISTP256),
+            EccCurves::P384 => Ok(BCRYPT_ECC_CURVE_NISTP384),
+            EccCurves::P521 => Ok(BCRYPT_ECC_CURVE_NISTP521),
+            EccCurves::BrainpoolP256r1 => Ok(BCRYPT_ECC_CURVE_BRAINPOOLP256R1),
+            EccCurves::BrainpoolP384r1 => Ok(BCRYPT_ECC_CURVE_BRAINPOOLP384R1),
+            EccCurves::BrainpoolP512r1 => Ok(BCRYPT_ECC_CURVE_BRAINPOOLP512R1),
+            EccCurves::Secp256k1 => Ok(BCRYPT_ECC_CURVE_SECP256K1),
+            _ => Err(TpmError::UnsupportedOperation(
+                "ECC algorithm not supported by CNG Windows.".to_owned(),
+            )
+            .into()),
+        }
+    }
 }
