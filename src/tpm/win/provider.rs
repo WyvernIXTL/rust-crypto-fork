@@ -11,16 +11,21 @@ use crate::{
     tpm::{core::error::TpmError, win::execute_ncrypt_function, TpmConfig},
 };
 use async_trait::async_trait;
+use std::mem::transmute;
 use tracing::instrument;
 use windows::{
     core::PCWSTR,
-    Win32::Security::Cryptography::{
-        NCryptCreatePersistedKey, NCryptFinalizeKey, NCryptOpenKey, NCryptOpenStorageProvider,
-        NCryptSetProperty, BCRYPT_ECDH_ALGORITHM, BCRYPT_ECDSA_ALGORITHM, CERT_KEY_SPEC,
-        MS_PLATFORM_CRYPTO_PROVIDER, NCRYPT_ALLOW_DECRYPT_FLAG, NCRYPT_ALLOW_SIGNING_FLAG,
-        NCRYPT_CERTIFICATE_PROPERTY, NCRYPT_FLAGS, NCRYPT_KEY_HANDLE, NCRYPT_KEY_USAGE_PROPERTY,
-        NCRYPT_LENGTH_PROPERTY, NCRYPT_OVERWRITE_KEY_FLAG, NCRYPT_PROV_HANDLE,
-        NCRYPT_RSA_ALGORITHM, NCRYPT_SILENT_FLAG,
+    Win32::Security::{
+        Cryptography::{
+            NCryptCreatePersistedKey, NCryptFinalizeKey, NCryptGetProperty, NCryptOpenKey,
+            NCryptOpenStorageProvider, NCryptSetProperty, BCRYPT_ECDH_ALGORITHM,
+            BCRYPT_ECDSA_ALGORITHM, CERT_KEY_SPEC, MS_PLATFORM_CRYPTO_PROVIDER,
+            NCRYPT_ALLOW_DECRYPT_FLAG, NCRYPT_ALLOW_SIGNING_FLAG, NCRYPT_CERTIFICATE_PROPERTY,
+            NCRYPT_FLAGS, NCRYPT_KEY_HANDLE, NCRYPT_KEY_USAGE_PROPERTY, NCRYPT_LENGTHS_PROPERTY,
+            NCRYPT_LENGTH_PROPERTY, NCRYPT_OVERWRITE_KEY_FLAG, NCRYPT_PROV_HANDLE,
+            NCRYPT_RSA_ALGORITHM, NCRYPT_SILENT_FLAG, NCRYPT_SUPPORTED_LENGTHS,
+        },
+        OBJECT_SECURITY_INFORMATION,
     },
 };
 
@@ -98,18 +103,13 @@ impl Provider for TpmProvider {
             let key_length: u32 = (*key_bits).into();
             let key_length_bytes = key_length.to_le_bytes();
 
-            //TODO Write code that tests that the RSA-Key is not too long for current TPM provider.
-
-            execute_ncrypt_function!(NCryptSetProperty(
-                key_handle,             // Convert the handle into the expected parameter type
-                NCRYPT_LENGTH_PROPERTY, // Convert the property name into the expected parameter type
-                &key_length_bytes,      // Provide the property value as a byte slice
-                NCRYPT_SILENT_FLAG,     // Flags
-            ));
-            let key_length: u32 = (*key_bits).into();
-            let key_length_bytes = key_length.to_le_bytes();
-
-            //TODO Write code that tests that the RSA-Key is not too long for current TPM provider.
+            if !key_supports_length(&key_handle, key_length)? {
+                return Err(TpmError::UnsupportedOperation(format!(
+                    "Key length ({}bits) not supported.",
+                    key_length
+                ))
+                .into());
+            }
 
             execute_ncrypt_function!(NCryptSetProperty(
                 key_handle,             // Convert the handle into the expected parameter type
@@ -284,4 +284,32 @@ impl Provider for TpmProvider {
 
         Ok(())
     }
+}
+
+/// Return [`NCRYPT_SUPPORTED_LENGTHS`] for [`NCRYPT_KEY_HANDLE`].
+fn ncrypt_supported_key_lengths(
+    key_handle: &NCRYPT_KEY_HANDLE,
+) -> Result<NCRYPT_SUPPORTED_LENGTHS, SecurityModuleError> {
+    let mut key_length_properties_bytes: [u8; 16] = [0u8; 16];
+    let mut copied_bytes_count: u32 = 0;
+
+    execute_ncrypt_function!(NCryptGetProperty(
+        *key_handle,
+        NCRYPT_LENGTHS_PROPERTY,
+        Some(&mut key_length_properties_bytes),
+        &mut copied_bytes_count,
+        OBJECT_SECURITY_INFORMATION(NCRYPT_SILENT_FLAG.0),
+    ));
+    debug_assert_eq!(copied_bytes_count, 16);
+
+    Ok(unsafe { transmute(key_length_properties_bytes) })
+}
+
+/// Return true if length in bits is supported by key.
+fn key_supports_length(
+    key_handle: &NCRYPT_KEY_HANDLE,
+    length: u32,
+) -> Result<bool, SecurityModuleError> {
+    let key_length_properties = ncrypt_supported_key_lengths(key_handle)?;
+    Ok(key_length_properties.dwMinLength <= length && length <= key_length_properties.dwMaxLength)
 }
