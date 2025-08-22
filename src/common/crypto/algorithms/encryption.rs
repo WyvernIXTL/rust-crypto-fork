@@ -5,6 +5,8 @@ use zeroize::Zeroize;
 
 use strum::{EnumString, IntoStaticStr};
 
+use crate::common::traits::module_provider::ProviderImpl;
+
 /// Represents the available encryption algorithms.
 ///
 /// This enum provides a C-compatible representation of different encryption
@@ -114,11 +116,8 @@ impl Cipher {
     #[allow(dead_code)] // is used in tests
     pub(crate) fn iv_len(&self) -> usize {
         match self {
-            Self::AesCbc128
-            | Self::AesGcm128
-            | Self::AesCbc256
-            | Self::AesGcm256
-            | Self::ChaCha20Poly1305 => 12,
+            Self::AesGcm128 | Self::AesGcm256 | Self::ChaCha20Poly1305 => 12,
+            Self::AesCbc128 | Self::AesCbc256 => 16,
             Self::XChaCha20Poly1305 => 24,
         }
     }

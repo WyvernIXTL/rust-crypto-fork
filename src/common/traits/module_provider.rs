@@ -4,6 +4,8 @@ use crate::provider::android::provider::{AndroidProvider, AndroidProviderFactory
 use crate::provider::apple_secure_enclave::provider::{
     AppleSecureEnclaveFactory, AppleSecureEnclaveProvider,
 };
+#[cfg(feature = "linux")]
+use crate::provider::linux::{provider::LinuxProvider, provider_factory::LinuxProviderFactory};
 #[cfg(feature = "software")]
 use crate::provider::software::{SoftwareProvider, SoftwareProviderFactory};
 #[cfg(feature = "win")]
@@ -44,6 +46,8 @@ pub(crate) enum ProviderFactoryEnum {
     SoftwareProviderFactory,
     #[cfg(feature = "win")]
     WindowsProviderFactory,
+    #[cfg(feature = "linux")]
+    LinuxProviderFactory,
 }
 
 /// Defines the interface for a security module provider.
@@ -206,4 +210,6 @@ pub(crate) enum ProviderImplEnum {
     SoftwareProvider,
     #[cfg(feature = "win")]
     WindowsProvider,
+    #[cfg(feature = "linux")]
+    LinuxProvider,
 }

@@ -37,7 +37,7 @@ impl CleanupKeyPair {
     }
 }
 
-fn setup() {
+pub(crate) fn setup() {
     SETUP_INITIALIZATION.call_once(|| {
         install().unwrap();
 
